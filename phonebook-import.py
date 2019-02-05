@@ -20,21 +20,104 @@ errCount = None
 sources = None
 dest = None
 #
-# def readConfigFile():
-#   global sources
-#   global dest
-#   with open(CONFIG_PATH, 'r') as configFile:
-#     configs = json.load(configFile)
-
-#   sources = configs['sources']
-#   dest = configs['destination']
-
 def signalHandler(sig, frame):
   logSourceRes()
   logger.critical('interrupted by SIGINT')
   sys.exit(0)
 
 signal.signal(signal.SIGINT, signalHandler)
+
+def test():
+
+  global sourceId
+  global importedCount
+  global toTransfer
+  global errCount
+  global startTime
+  global sources
+  global dest
+
+  logger.info('Start TEST mysql db phonebooks import into phonebook.phonebook')
+
+  # read destination file config
+  try:
+    with open(DEST_CONFIG, 'r') as configFile:
+      dest = json.load(configFile)
+      logger.info('check ' + DEST_CONFIG + ': OK')
+  except Exception as err:
+    logger.error('check ' + DEST_CONFIG + ': FAILED')
+    logger.error(str(err))
+    sys.exit(1)
+
+
+  try:
+    dbDest = MySQLdb.connect(
+      host=dest['host'],
+      port=int(dest['port']),
+      user=dest['user'],
+      passwd=dest['password'],
+      db=dest['dbname']
+    )
+    curDest = dbDest.cursor()
+    logger.info('check destination db connection: OK')
+  except Exception as err:
+    logger.error('check destination db connection: FAILED')
+    logger.error(str(err))
+    sys.exit(1)
+
+  # cycle all files of sources dir
+  filepaths = glob.glob(os.path.join(SOURCES_PATH, '*.json'))
+  for f in filepaths:
+    try:
+      with open(f, 'r') as sourceFile:
+        config = json.load(sourceFile)
+        logger.info('check source ' + f + ': OK')
+    except Exception as err:
+      logger.error('check source ' + f + ': FAILED')
+      logger.error('reading ' + f)
+      logger.error(str(err))
+
+    for sourceId, config in config.items():
+
+      # check if the source is enabled
+      if config['enabled'] == False:
+        logger.warn('check db source "' + sourceId + '" (' + f + '): DISABLED')
+        continue
+
+      # try connection
+      try:
+        dbSource = MySQLdb.connect(
+          host=config['host'],
+          port=int(config['port']),
+          user=config['user'],
+          passwd=config['password'],
+          db=config['dbname']
+        )
+        logger.info('check db source "' + sourceId + '" connection: OK')
+      except Exception as err:
+        logger.error('check db source "' + sourceId + '" connection: FAILED')
+        logger.error(str(err))
+        continue
+
+      # clean destination
+      try:
+        delcount = curDest.execute('SELECT COUNT(*) FROM ' + dest['dbtable'] + ' WHERE source="{}"'.format(sourceId))
+        logger.info(str(delcount) + ' entries with "source=' + sourceId + '" will be removed from destination ' + dest['dbname'] + '.' + dest['dbtable'] + ' before importing of source "' + sourceId + '"')
+      except Exception as err:
+        logger.error('getting number of entries to be remove from destination ' + dest['dbname'] + '.' + dest['dbtable'] + ' before importing of source "' + sourceId + '": FAILED')
+        logger.error(str(err))
+
+      # get total number of entries to be copied
+      curSource = dbSource.cursor()
+      curSource.execute('SELECT COUNT(*) FROM ' + config['dbtable'])
+      toTransfer = curSource.fetchone()[0]
+      logger.info(str(toTransfer) + ' entries will be copied from db source "' + sourceId + '" into destination ' + dest['dbname'] + '.' + dest['dbtable'])
+      curSource.close()
+      dbSource.close()
+
+  dbDest.close()
+  curDest.close()
+  logger.info('End TEST mysql db phonebooks import into phonebook.phonebook')
 
 def start():
   global sourceId
@@ -54,7 +137,7 @@ def start():
   except Exception as err:
     logger.error('reading ' + DEST_CONFIG)
     logger.error(str(err))
-    sys.exit(0)
+    sys.exit(1)
 
   try:
     dbDest = MySQLdb.connect(
@@ -68,8 +151,7 @@ def start():
   except Exception as err:
     logger.error('connecting to the destination db (check ' + DEST_CONFIG + ')')
     logger.error(str(err))
-    dbDest.close()
-    sys.exit(0)
+    sys.exit(1)
 
   # cycle all files of sources dir
   filepaths = glob.glob(os.path.join(SOURCES_PATH, '*.json'))
@@ -165,11 +247,14 @@ def logSourceRes():
 
 if __name__ == '__main__':
   # parse arguments
-  descr = 'MySQL Phonebook importer. You can specify more sources and \
-  a single destination into the custom-phonebooks.json file.'
+  descr = 'MySQL Phonebook importer.\
+  You can import more db sources into one sinlge db destination.\
+  The sources and destination configuration data has to be declared using json files\
+  into the /etc/phonebook/ directory. The import results are written to ' + LOG_PATH + '.'
   parser = argparse.ArgumentParser(description=descr)
   parser.add_argument('-lv', '--log_verbose', action='store_true', help='enable debug log level in ' + LOG_PATH)
   parser.add_argument('-v', '--verbose', action='store_true', help='enable console debug')
+  parser.add_argument('-t', '--test', action='store_true', help='test the source and destination configurations making some checks and writing some debug output to the console')
   args = parser.parse_args()
   # logger
   logger = logging.getLogger(__name__)
@@ -181,7 +266,10 @@ if __name__ == '__main__':
   logFormat = logging.Formatter('%(asctime)s [%(process)s] %(levelname)s: %(message)s', datefmt='%d-%b-%y %H:%M:%S')
   cHandler.setFormatter(logFormat)
   fHandler.setFormatter(logFormat)
-  if args.verbose == True:
+  if args.verbose == True or args.test == True:
     logger.addHandler(cHandler)
   logger.addHandler(fHandler)
-  start()
+  if args.test == True:
+    test()
+  else:
+    start()
